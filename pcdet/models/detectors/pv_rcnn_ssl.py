@@ -7,7 +7,7 @@ from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from .detector3d_template import Detector3DTemplate
 from.pv_rcnn import PVRCNN
-
+from collections import Counter
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -41,6 +41,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             unlabeled_mask = torch.nonzero(1-mask).squeeze(1).long()
             batch_dict_ema = {}
             keys = list(batch_dict.keys())
+            # (farzad) Separate _ema (teacher) input
             for k in keys:
                 if k + '_ema' in keys:
                     continue
@@ -56,6 +57,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         batch_dict_ema = cur_module(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True)
                     except:
                         batch_dict_ema = cur_module(batch_dict_ema)
+                # (farzad) Only unlabeled output
                 pred_dicts, recall_dicts = self.pv_rcnn_ema.post_processing(batch_dict_ema,
                                                                             no_recall_dict=True, override_thresh=0.0, no_nms=self.no_nms)
 
@@ -75,11 +77,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                         continue
 
 
+                    # mask = max_probs.ge(p_cutoff * (class_acc[max_idx] + 1.) / 2).float()  # linear
+                    # mask = max_probs.ge(p_cutoff * (1 / (2. - class_acc[max_idx]))).float()  # low_limit
+                    # mask = max_probs.ge(p_cutoff * (class_acc[max_idx] / (2. - class_acc[max_idx]))).float()  # convex
+                    # mask = max_probs.ge(p_cutoff * (torch.log(class_acc[max_idx] + 1.) + 0.5)/(math.log(2) + 0.5)).float()  # concave
+
                     conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
                         0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label-1).unsqueeze(-1))
 
+                    # Test combination of conf (obj) and sem (iou) thresholds like hybrid_score = alpha * obj + (1 - alpha) * iou
                     valid_inds = pseudo_score > conf_thresh.squeeze()
-
+                    # select = max_probs.ge(p_cutoff).long()
                     valid_inds = valid_inds * (pseudo_sem_score > self.sem_thresh[0])
 
                     pseudo_sem_score = pseudo_sem_score[valid_inds]
@@ -124,7 +132,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                             pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
                         new_boxes[unlabeled_mask[i]] = pseudo_box
                     batch_dict['gt_boxes'] = new_boxes
-
+                # undoing the weak augmentation on predicted bboxes to be used as pseudo-labels in original point clouds
                 batch_dict['gt_boxes'][unlabeled_mask, ...] = random_flip_along_x_bbox(
                     batch_dict['gt_boxes'][unlabeled_mask, ...], batch_dict['flip_x'][unlabeled_mask, ...]
                 )
@@ -144,6 +152,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_ious = []
                 pseudo_accs = []
                 pseudo_fgs = []
+                pseudo_classes = []
+                org_classes = []
                 for i, ind in enumerate(unlabeled_mask):
                     # statistics
                     anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(
@@ -151,6 +161,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                         ori_unlabeled_boxes[i, :, 0:7])
                     cls_pseudo = batch_dict['gt_boxes'][ind, ...][:, 7]
                     unzero_inds = torch.nonzero(cls_pseudo).squeeze(1).long()
+                    if len(pseudo_boxes[i]) > 0:
+                        pseudo_classes.extend(pseudo_boxes[i][:, 7].int().cpu().numpy())
+                    else:
+                        pseudo_classes.append(-1)
+                    if len(ori_unlabeled_boxes[i, :, 7]) > 0:
+                        org_classes.extend(ori_unlabeled_boxes[i, :, 7].int().cpu().numpy())
                     cls_pseudo = cls_pseudo[unzero_inds]
                     if len(unzero_inds) > 0:
                         iou_max, asgn = anchor_by_gt_overlap[unzero_inds, :].max(dim=1)
@@ -187,6 +203,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_accs.append(ones)
                         pseudo_fgs.append(ones)
 
+            # training student with both labeled and unlabeled
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
 
@@ -194,6 +211,15 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
+
+            # if use_hard_labels:
+            #     masked_loss = ce_loss(logits_s, max_idx, use_hard_labels, reduction='none') * mask
+            # else:
+            #     pseudo_label = torch.softmax(logits_w / T, dim=-1)
+            #     masked_loss = ce_loss(logits_s, pseudo_label, use_hard_labels) * mask
+
+            # if x_ulb_idx[select == 1].nelement() != 0:
+            #     selected_label[x_ulb_idx[select == 1]] = pseudo_lb[select == 1]
 
             if not self.unlabeled_supervise_cls:
                 loss_rpn_cls = loss_rpn_cls[labeled_mask, ...].sum()
@@ -226,8 +252,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             tb_dict_['pseudo_ious'] = torch.cat(pseudo_ious, dim=0).mean()
             tb_dict_['pseudo_accs'] = torch.cat(pseudo_accs, dim=0).mean()
+            # TODO(farzad) make sure to change this to support multiple unlabeled samples in a batch
+            #  (currently works only for one sample)
             tb_dict_['sem_score_fg'] = sem_score_fg.mean()
             tb_dict_['sem_score_bg'] = sem_score_bg.mean()
+
+            tb_dict_['pseudo_classes'] = Counter(pseudo_classes)
+            tb_dict_['org_classes'] = Counter(org_classes)
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
@@ -260,7 +291,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         # Use the true average until the exponential average is more correct
         alpha = min(1 - 1 / (self.global_step + 1), alpha)
         for ema_param, param in zip(self.pv_rcnn_ema.parameters(), self.pv_rcnn.parameters()):
-            ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+            ema_param.data.mul_(alpha).add_((1 - alpha) * param.data)
 
     def load_params_from_file(self, filename, logger, to_cpu=False):
         if not os.path.isfile(filename):

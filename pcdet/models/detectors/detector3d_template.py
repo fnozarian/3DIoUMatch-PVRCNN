@@ -198,6 +198,7 @@ class Detector3DTemplate(nn.Module):
             src_box_preds = box_preds
 
             if not isinstance(batch_dict['batch_cls_preds'], list):
+                # (farzad) batch_cls_preds are for the rcnn cls predictions branch not rpn
                 cls_preds = batch_dict['batch_cls_preds'][batch_mask]
 
                 src_cls_preds = cls_preds
@@ -210,7 +211,7 @@ class Detector3DTemplate(nn.Module):
                 src_cls_preds = cls_preds
                 if not batch_dict['cls_preds_normalized']:
                     cls_preds = [torch.sigmoid(x) for x in cls_preds]
-
+            # (farzad) disabled by default
             if post_process_cfg.NMS_CONFIG.MULTI_CLASSES_NMS:
                 if not isinstance(cls_preds, list):
                     cls_preds = [cls_preds]
@@ -223,6 +224,7 @@ class Detector3DTemplate(nn.Module):
                 for cur_cls_preds, cur_label_mapping in zip(cls_preds, multihead_label_mapping):
                     assert cur_cls_preds.shape[1] == len(cur_label_mapping)
                     cur_box_preds = box_preds[cur_start_idx: cur_start_idx + cur_cls_preds.shape[0]]
+                    # (farzad) Note that the threshold is overrided by zero perhaps to include filter less pseudo-labels
                     cur_pred_scores, cur_pred_labels, cur_pred_boxes = model_nms_utils.multi_classes_nms(
                         cls_scores=cur_cls_preds, box_preds=cur_box_preds,
                         nms_config=post_process_cfg.NMS_CONFIG,
@@ -251,6 +253,8 @@ class Detector3DTemplate(nn.Module):
                     selected = torch.arange(len(cls_preds), device=cls_preds.device)
                     selected_scores = cls_preds
                 else:
+                    # (farzad) Seems they have disabled sem_score (rpn 3-classes cls score) for nms.
+                    # Seems rcnn cls scores (fg/bg based on roi_iou with pseudo-labels) are more promising.
                     if False:
                         selected, selected_scores = model_nms_utils.class_agnostic_nms(
                             box_scores=torch.sigmoid(sem_scores), box_preds=box_preds,
@@ -258,6 +262,10 @@ class Detector3DTemplate(nn.Module):
                             score_thresh=post_process_cfg.SCORE_THRESH
                         )
                     else:
+                        # (farzad) cls_preds are the rcnn cls predictions for fg/bg (hard bg) where targets are created as follows:
+                        # if fg -> 1
+                        # elseif hard_bg -> weighted value based on the iou between iou and the pseudo-labels
+                        # else easy_bg -> 0 (discard in loss)
                         selected, selected_scores = model_nms_utils.class_agnostic_nms(
                             box_scores=cls_preds, box_preds=box_preds,
                             nms_config=post_process_cfg.NMS_CONFIG,

@@ -47,7 +47,8 @@ class ProposalTargetLayer(nn.Module):
             fg_mask = batch_roi_ious > iou_fg_thresh
             bg_mask = batch_roi_ious < iou_bg_thresh
             interval_mask = (fg_mask == 0) & (bg_mask == 0)
-
+            # (farzad) rcnn cls labels are created here. the interval_mask or hard_bgs are weighted (linearly) according to their
+            # iou with pseudo-labels (because of the batch_rio_ious in nominator).
             batch_cls_labels = (fg_mask > 0).float()
             batch_cls_labels[interval_mask] = \
                 (batch_roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)

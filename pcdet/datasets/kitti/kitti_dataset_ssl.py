@@ -36,7 +36,7 @@ class KittiDatasetSSL(DatasetTemplate):
         else:
             self.sample_id_list = [x.strip().split(' ')[0] for x in
                                open(split_dir).readlines()] if split_dir.exists() else None
-            self.sample_index_list = [x.strip().split(' ')[1] for x in
+            self.sample_index_list = [int(x.strip().split(' ')[1]) for x in
                                   open(split_dir).readlines()] if split_dir.exists() else None
 
         self.kitti_infos = []
@@ -386,8 +386,9 @@ class KittiDatasetSSL(DatasetTemplate):
         data_dict_labeled = self.get_item_single(info)
 
         if self.training:
-            index_unlabeled = np.random.choice(self.unlabeled_index_list, 1)[0]
-            info_unlabeled = copy.deepcopy(self.unlabeled_kitti_infos[index_unlabeled])
+            # index_unlabeled = np.random.choice(self.unlabeled_index_list, 1)[0]
+            # info_unlabeled = copy.deepcopy(self.unlabeled_kitti_infos[index_unlabeled])
+            info_unlabeled = np.random.choice(self.unlabeled_kitti_infos, 1)[0]
 
             data_dict_unlabeled = self.get_item_single(info_unlabeled, no_db_sample=True)
             return [data_dict_labeled, data_dict_unlabeled]
@@ -515,6 +516,7 @@ class KittiDatasetSSL(DatasetTemplate):
             # print(data_dict)
             points_ema = data_dict['points'].copy()
             gt_boxes_ema = data_dict['gt_boxes'].copy()
+            # apply weak augmentation for teacher input
             gt_boxes_ema, points_ema, _ = global_scaling(gt_boxes_ema, points_ema, [0, 2],
                                                          scale_=1/data_dict['scale'])
             gt_boxes_ema, points_ema, _ = global_rotation(gt_boxes_ema, points_ema, [-1, 1],

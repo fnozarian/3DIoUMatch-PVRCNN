@@ -5,6 +5,7 @@ import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
 
+kitti_class_map = {-1: 'no_ps', 1: 'Car', 2: 'Pedestrian', 3: 'Cyclist'}
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -14,6 +15,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     if rank == 0:
         pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
 
+    # selected_label = torch.ones((len(train_loader.dataset.unlabeled_kitti_infos),), dtype=torch.long, ) * -1
+    # selected_label = selected_label.cuda()
+    # classwise_ps_counts = torch.zeros((3,)).cuda()
+    classwise_ps_counts = {}
+    classwise_label_counts = {}
     for cur_it in range(total_it_each_epoch):
         try:
             batch = next(dataloader_iter)
@@ -44,6 +50,21 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         accumulated_iter += 1
         disp_dict.update({'loss': loss.item(), 'lr': cur_lr})
 
+        for k, v in tb_dict['pseudo_classes'].items():
+            cls_key = kitti_class_map[k]
+            if cls_key in classwise_ps_counts.keys():
+                classwise_ps_counts[cls_key] += v
+            else:
+                classwise_ps_counts[cls_key] = v
+            if cls_key in classwise_label_counts.keys():
+                classwise_label_counts[cls_key] += tb_dict['org_classes'][k]
+            else:
+                classwise_label_counts[cls_key] = tb_dict['org_classes'][k]
+
+
+
+        tb_dict.pop('pseudo_classes')
+        tb_dict.pop('org_classes')
         # log to console and tensorboard
         if rank == 0:
             pbar.update()
@@ -58,6 +79,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                     # print(key, val)
                     tb_log.add_scalar('train/' + key, val, accumulated_iter)
     if rank == 0:
+        tb_log.add_scalars("pseudo_classes", classwise_ps_counts, accumulated_iter)
+        new_classwise = {}
+        for key, val in classwise_label_counts.items():
+            new_classwise[key + "_org"] = val
+        tb_log.add_scalars("pseudo_classes", new_classwise, accumulated_iter)
         pbar.close()
     return accumulated_iter
 
