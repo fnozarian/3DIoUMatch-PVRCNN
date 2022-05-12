@@ -5,7 +5,7 @@ import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
 
-kitti_class_map = {-1: 'no_ps', 1: 'Car', 2: 'Pedestrian', 3: 'Cyclist'}
+kitti_class_map = {-1: 'no_fg', 1: 'Car', 2: 'Pedestrian', 3: 'Cyclist'}
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -56,6 +56,8 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                 classwise_ps_counts[cls_key] += v
             else:
                 classwise_ps_counts[cls_key] = v
+        for k, v in tb_dict['org_classes'].items():
+            cls_key = kitti_class_map[k]
             if cls_key in classwise_label_counts.keys():
                 classwise_label_counts[cls_key] += tb_dict['org_classes'][k]
             else:

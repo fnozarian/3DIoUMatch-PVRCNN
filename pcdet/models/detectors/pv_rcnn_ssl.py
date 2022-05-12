@@ -160,13 +160,18 @@ class PVRCNN_SSL(Detector3DTemplate):
                         batch_dict['gt_boxes'][ind, ...][:, 0:7],
                         ori_unlabeled_boxes[i, :, 0:7])
                     cls_pseudo = batch_dict['gt_boxes'][ind, ...][:, 7]
+                    cls_org = ori_unlabeled_boxes[i, :, 7]
                     unzero_inds = torch.nonzero(cls_pseudo).squeeze(1).long()
-                    if len(pseudo_boxes[i]) > 0:
-                        pseudo_classes.extend(pseudo_boxes[i][:, 7].int().cpu().numpy())
+                    unzero_inds_org = torch.nonzero(cls_org).squeeze(1).long()
+                    if len(unzero_inds) > 0:
+                        pseudo_classes.extend(cls_pseudo[unzero_inds].int().cpu().numpy())
                     else:
                         pseudo_classes.append(-1)
-                    if len(ori_unlabeled_boxes[i, :, 7]) > 0:
-                        org_classes.extend(ori_unlabeled_boxes[i, :, 7].int().cpu().numpy())
+                    if len(unzero_inds_org) > 0:
+                        org_classes.extend(cls_org[unzero_inds_org].int().cpu().numpy())
+                    else:
+                        org_classes.append(-1)
+
                     cls_pseudo = cls_pseudo[unzero_inds]
                     if len(unzero_inds) > 0:
                         iou_max, asgn = anchor_by_gt_overlap[unzero_inds, :].max(dim=1)
